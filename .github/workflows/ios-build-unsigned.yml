@@ -1,0 +1,139 @@
+# GitHub Actions workflow for building UNSIGNED iOS IPA
+# 
+# 此工作流生成未签名的 IPA 文件，无需任何 Apple 证书
+# 生成的 IPA 可以使用第三方工具进行自签名后安装
+#
+# 使用方法:
+# 1. 将此文件放在 .github/workflows/ 目录下
+# 2. 在 GitHub Actions 页面手动触发构建
+# 3. 下载生成的 IPA artifact
+# 4. 使用 AltStore、Sideloadly、TrollStore 等工具签名安装
+
+name: iOS Build (Unsigned)
+
+on:
+  # 仅支持手动触发
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: '构建配置'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+
+env:
+  SCHEME: LxMusicMobile
+  PROJECT: ios/LxMusicMobile.xcodeproj
+  
+jobs:
+  build-unsigned:
+    name: Build Unsigned IPA
+    runs-on: macos-14  # macOS Sonoma with Xcode 15
+    
+    steps:
+      # 1. 检出代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. 设置 Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      # 3. 安装 Node 依赖
+      - name: Install Node dependencies
+        run: npm ci
+
+      # 4. 安装 CocoaPods
+      - name: Install CocoaPods
+        run: |
+          gem install cocoapods
+          cd ios && pod install --repo-update
+
+      # 5. 缓存 Pods
+      - name: Cache Pods
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      # 6. 显示 Xcode 版本
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcode-select -p
+
+      # 7. 构建 .app (无签名)
+      - name: Build iOS App (Unsigned)
+        run: |
+          CONFIGURATION="${{ github.event.inputs.configuration || 'Release' }}"
+          
+          xcodebuild \
+            -workspace ios/LxMusicMobile.xcworkspace \
+            -scheme $SCHEME \
+            -configuration $CONFIGURATION \
+            -sdk iphoneos \
+            -derivedDataPath $RUNNER_TEMP/build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=NO \
+            build
+
+      # 8. 创建 Payload 目录并打包 IPA
+      - name: Create Unsigned IPA
+        run: |
+          CONFIGURATION="${{ github.event.inputs.configuration || 'Release' }}"
+          APP_PATH="$RUNNER_TEMP/build/Build/Products/$CONFIGURATION-iphoneos/LxMusicMobile.app"
+          
+          # 检查 .app 是否存在
+          if [ ! -d "$APP_PATH" ]; then
+            echo "Error: .app not found at $APP_PATH"
+            echo "Searching for .app files..."
+            find $RUNNER_TEMP/build -name "*.app" -type d
+            exit 1
+          fi
+          
+          echo "Found app at: $APP_PATH"
+          
+          # 创建 Payload 目录结构
+          mkdir -p $RUNNER_TEMP/Payload
+          cp -r "$APP_PATH" $RUNNER_TEMP/Payload/
+          
+          # 打包成 IPA
+          cd $RUNNER_TEMP
+          zip -r LxMusicMobile-unsigned.ipa Payload
+          
+          echo "IPA created successfully!"
+          ls -la $RUNNER_TEMP/LxMusicMobile-unsigned.ipa
+
+      # 9. 上传未签名 IPA
+      - name: Upload Unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: LxMusicMobile-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/LxMusicMobile-unsigned.ipa
+          retention-days: 30
+
+      # 10. 显示构建信息
+      - name: Build Summary
+        run: |
+          echo "## 构建完成 ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **配置**: ${{ github.event.inputs.configuration || 'Release' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 下一步" >> $GITHUB_STEP_SUMMARY
+          echo "1. 下载 Artifact 中的 IPA 文件" >> $GITHUB_STEP_SUMMARY
+          echo "2. 使用以下工具之一进行签名安装:" >> $GITHUB_STEP_SUMMARY
+          echo "   - **AltStore** (推荐，免费)" >> $GITHUB_STEP_SUMMARY
+          echo "   - **Sideloadly** (Windows/Mac)" >> $GITHUB_STEP_SUMMARY
+          echo "   - **TrollStore** (需要越狱或特定iOS版本)" >> $GITHUB_STEP_SUMMARY
+          echo "   - **3uTools** (Windows)" >> $GITHUB_STEP_SUMMARY
